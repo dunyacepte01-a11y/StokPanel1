@@ -641,34 +641,34 @@ async function doAuth(){
       if(!ad||!soyad){aErr('Ad ve soyad zorunludur!');btn.disabled=false;btn.textContent='Kayıt Ol';return}
       if(!firma){aErr('⚠️ Firma adı zorunludur! Lütfen işletme adınızı girin.');btn.disabled=false;btn.textContent='Kayıt Ol';return}
       const fullName=`${ad} ${soyad}`.trim();
-      // Aynı firma adıyla kayıt var mı kontrol et
-      const {data:existComp}=await sb.from('company').select("Kullanıcı kim,isim").ilike("isim",firma).limit(1);
+      // Aynı firma adıyla daha önce kayıt var mı?
+      const {data:existComp}=await sb.from('company').select('user_id,name').ilike('name',firma).limit(1);
       const firmaVar=existComp&&existComp.length>0;
-      // Firmada zaten admin var mı?
-      let rol='viewer';
-      if(!firmaVar){
-        // Yeni firma — ilk kişi admin olur
-        rol='admin';
-      }else{
-        // Mevcut firmaya katılıyor — viewer olarak başlar
-        rol='viewer';
-      }
-      const {data,error}=await sb.auth.signUp({email,password:pass,options:{data:{full_name:fullName}}});
+      // İlk kayıt = admin, sonrakiler = viewer
+      const role=firmaVar?'viewer':'admin';
+      const {data,error}=await sb.auth.signUp({email,password:pass,options:{data:{full_name:fullName,company_name:firma,role:role}}});
       if(error)throw error;
       if(data.user){
-        await sb.from('profiles').upsert({id:data.user.id,full_name:fullName,rol:rol,phone:"",frozen:false});
+        // Trigger zaten profiles oluşturuyor ama role'ü güncellememiz lazım
+        await sb.from('profiles').upsert({
+          id:data.user.id,
+          full_name:fullName,
+          role:role,
+          phone:'',
+          frozen:false
+        });
         if(firmaVar){
           // Mevcut firmaya bağlan
-          await sb.from('company').upsert({user_id:data.user.id,isim:existComp[0].name});
+          await sb.from('company').upsert({user_id:data.user.id,name:existComp[0].name});
         }else{
           // Yeni firma kur
-          await sb.from('company').upsert({user_id:data.user.id,isim:firma});
-          await sb.from('shelves').insert({user_id:data.user.id,depo:"Ana Depo",isim:"Genel Raf","Tanım":"Varsayılan raf"});
+          await sb.from('company').upsert({user_id:data.user.id,name:firma});
+          await sb.from('shelves').insert({user_id:data.user.id,warehouse:'Ana Depo',name:'Genel Raf',description:'Varsayılan raf'});
         }
       }
       const rolMsg=firmaVar
         ?`"${firma}" firmasına Viewer olarak eklendi. Admin rolünüzü yükseltebilir.`
-        :`"${firma}" firması kuruldu. Admin olarak giriş yapabilirsiniz.`;
+        :`"${firma}" firması kuruldu. İlk kullanıcı olarak Admin oldunuz.`;
       aSuc('✅ '+rolMsg);
       swTab('giris');
     }else{
@@ -720,8 +720,13 @@ async function startApp(){
     }
     // Firma yükle
     const {data:comp}=await sb.from('company').select('*').eq('user_id',U.id).single();
-    COMP=comp||{user_id:U.id,name:'İşletmem'};
-    if(!comp) await sb.from('company').upsert({user_id:U.id,name:'İşletmem'});
+    COMP=comp||null;
+    if(!comp){
+      // Firma kaydı yoksa meta'dan veya varsayılan oluştur
+      const compName=U.user_metadata?.company_name||'İşletmem';
+      await sb.from('company').upsert({user_id:U.id,name:compName});
+      COMP={user_id:U.id,name:compName};
+    }
     // Admin menüsü
     if(isAdmin()) document.getElementById('kulMnu').style.display='flex';
     hideLd();
